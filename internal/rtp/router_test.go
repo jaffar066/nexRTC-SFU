@@ -37,7 +37,16 @@ func TestRTPRouterForwardsOnlyToSubscribersOfPacketSSRC(t *testing.T) {
 		t.Fatalf("subscribe peer-c: %v", err)
 	}
 
-	packet := &Packet{SSRC: 123, SequenceNumber: 7, Payload: []byte("frame")}
+	packet := &Packet{
+		SSRC:             123,
+		SequenceNumber:   7,
+		CSRCCount:        1,
+		CSRCs:            []uint32{456},
+		Extension:        true,
+		ExtensionProfile: 0xBEDE,
+		ExtensionData:    []byte{1, 2, 3, 4},
+		Payload:          []byte("frame"),
+	}
 	if err := router.Forward(packet); err != nil {
 		t.Fatalf("forward packet: %v", err)
 	}
@@ -53,10 +62,15 @@ func TestRTPRouterForwardsOnlyToSubscribersOfPacketSSRC(t *testing.T) {
 			}
 			if forwarded.SSRC != packet.SSRC ||
 				forwarded.SequenceNumber != packet.SequenceNumber ||
+				!equalUint32s(forwarded.CSRCs, packet.CSRCs) ||
+				forwarded.ExtensionProfile != packet.ExtensionProfile ||
+				string(forwarded.ExtensionData) != string(packet.ExtensionData) ||
 				string(forwarded.Payload) != string(packet.Payload) {
 				t.Errorf("%s received incorrect packet: %+v", name, forwarded)
 			}
 			forwarded.Payload[0] = 'X'
+			forwarded.CSRCs[0]++
+			forwarded.ExtensionData[0]++
 		default:
 			t.Errorf("%s did not receive the packet", name)
 		}
@@ -65,7 +79,9 @@ func TestRTPRouterForwardsOnlyToSubscribersOfPacketSSRC(t *testing.T) {
 	if len(unrelated.packets) != 0 {
 		t.Fatal("subscriber to another SSRC received the packet")
 	}
-	if string(packet.Payload) != "frame" {
+	if string(packet.Payload) != "frame" ||
+		packet.CSRCs[0] != 456 ||
+		packet.ExtensionData[0] != 1 {
 		t.Fatal("forwarding allowed a subscriber to mutate the source packet")
 	}
 }

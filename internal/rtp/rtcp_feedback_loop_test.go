@@ -1,7 +1,6 @@
 package rtp
 
 import (
-	"net"
 	"testing"
 	"time"
 
@@ -138,6 +137,13 @@ func TestRTCPFeedbackLoopRejectsRepeatedStart(t *testing.T) {
 	loop.Stop()
 }
 
+func TestRTCPFeedbackLoopRejectsNilController(t *testing.T) {
+	loop := NewRTCPFeedbackLoop(nil, time.Millisecond)
+	if err := loop.Start(); err == nil {
+		t.Fatal("expected Start() to reject a nil controller")
+	}
+}
+
 func TestRTCPFeedbackLoopStopIsSafe(t *testing.T) {
 	transport, err := NewRTCPTransport("127.0.0.1:0")
 	if err != nil {
@@ -178,7 +184,3 @@ func TestRTCPFeedbackLoopStopIsSafe(t *testing.T) {
 
 	loop.Stop()
 }
-
-// Keep the net package available for any additional
-// UDP address assertions added to this test file.
-var _ net.Addr

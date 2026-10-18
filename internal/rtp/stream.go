@@ -107,6 +107,21 @@ func (m *StreamManager) ProcessPacket(
 	arrivalTime float64,
 	clockRate uint32,
 ) []uint16 {
+	return m.ProcessPacketAt(
+		packet,
+		arrivalTime,
+		clockRate,
+		time.Now(),
+	)
+}
+
+// ProcessPacketAt processes an RTP packet using the supplied time for NACK scheduling.
+func (m *StreamManager) ProcessPacketAt(
+	packet *Packet,
+	arrivalTime float64,
+	clockRate uint32,
+	now time.Time,
+) []uint16 {
 
 	if packet == nil {
 		return nil
@@ -136,7 +151,7 @@ func (m *StreamManager) ProcessPacket(
 		m.nackScheduler.Schedule(
 			packet.SSRC,
 			result.Missing,
-			time.Now(),
+			now,
 		)
 	}
 

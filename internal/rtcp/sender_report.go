@@ -19,68 +19,63 @@ type SenderReport struct {
 
 	SenderPacketCount uint32
 	SenderOctetCount  uint32
+
+	Blocks []ReceiverReportBlock
 }
 
 func (sr *SenderReport) Marshal() ([]byte, error) {
-	data := make([]byte, SenderReportSize)
+	if sr == nil {
+		return nil, errors.New("sender report is nil")
+	}
+	if len(sr.Blocks) > 31 {
+		return nil, errors.New("too many sender report blocks")
+	}
+	payload := make([]byte, 24+len(sr.Blocks)*ReceiverReportBlockSize)
+	binary.BigEndian.PutUint32(payload[0:4], sr.SSRC)
+	binary.BigEndian.PutUint32(payload[4:8], sr.NTPSec)
+	binary.BigEndian.PutUint32(payload[8:12], sr.NTPFrac)
+	binary.BigEndian.PutUint32(payload[12:16], sr.RTPTimestamp)
+	binary.BigEndian.PutUint32(payload[16:20], sr.SenderPacketCount)
+	binary.BigEndian.PutUint32(payload[20:24], sr.SenderOctetCount)
 
-	// Version = 2
-	data[0] = 2 << 6
+	offset := 24
+	for _, block := range sr.Blocks {
+		marshalReceiverReportBlock(payload[offset:offset+ReceiverReportBlockSize], block)
+		offset += ReceiverReportBlockSize
+	}
 
-	// Report Count = 0
-	data[0] |= 0
-
-	// Packet Type = 200
-	data[1] = SenderReportType
-
-	// RTCP length:
-	// (28 / 4) - 1 = 6
-	binary.BigEndian.PutUint16(data[2:4], 6)
-
-	// SSRC
-	binary.BigEndian.PutUint32(data[4:8], sr.SSRC)
-
-	// NTP timestamp
-	binary.BigEndian.PutUint32(data[8:12], sr.NTPSec)
-	binary.BigEndian.PutUint32(data[12:16], sr.NTPFrac)
-
-	// RTP timestamp
-	binary.BigEndian.PutUint32(data[16:20], sr.RTPTimestamp)
-
-	// Sender packet count
-	binary.BigEndian.PutUint32(data[20:24], sr.SenderPacketCount)
-
-	// Sender octet count
-	binary.BigEndian.PutUint32(data[24:28], sr.SenderOctetCount)
-
-	return data, nil
+	return (&Packet{
+		Version: 2,
+		Count:   uint8(len(sr.Blocks)),
+		Type:    SenderReportType,
+		Payload: payload,
+	}).Marshal()
 }
 
 func UnmarshalSenderReport(data []byte) (*SenderReport, error) {
-	if len(data) < SenderReportSize {
-		return nil, errors.New("sender report too short")
+	packet, err := Unmarshal(data)
+	if err != nil {
+		return nil, err
 	}
-
-	if data[0]>>6 != 2 {
-		return nil, errors.New("unsupported RTCP version")
-	}
-
-	if data[1] != SenderReportType {
+	if packet.Type != SenderReportType {
 		return nil, errors.New("not a sender report")
 	}
-
-	length := binary.BigEndian.Uint16(data[2:4])
-
-	if length < 6 {
-		return nil, errors.New("invalid sender report length")
+	expectedPayloadSize := 24 + int(packet.Count)*ReceiverReportBlockSize
+	if len(packet.Payload) != expectedPayloadSize {
+		return nil, errors.New("sender report payload length does not match report count")
 	}
 
-	return &SenderReport{
-		SSRC:              binary.BigEndian.Uint32(data[4:8]),
-		NTPSec:            binary.BigEndian.Uint32(data[8:12]),
-		NTPFrac:           binary.BigEndian.Uint32(data[12:16]),
-		RTPTimestamp:      binary.BigEndian.Uint32(data[16:20]),
-		SenderPacketCount: binary.BigEndian.Uint32(data[20:24]),
-		SenderOctetCount:  binary.BigEndian.Uint32(data[24:28]),
-	}, nil
+	report := &SenderReport{
+		SSRC:              binary.BigEndian.Uint32(packet.Payload[0:4]),
+		NTPSec:            binary.BigEndian.Uint32(packet.Payload[4:8]),
+		NTPFrac:           binary.BigEndian.Uint32(packet.Payload[8:12]),
+		RTPTimestamp:      binary.BigEndian.Uint32(packet.Payload[12:16]),
+		SenderPacketCount: binary.BigEndian.Uint32(packet.Payload[16:20]),
+		SenderOctetCount:  binary.BigEndian.Uint32(packet.Payload[20:24]),
+		Blocks:            make([]ReceiverReportBlock, 0, packet.Count),
+	}
+	for offset := 24; offset < len(packet.Payload); offset += ReceiverReportBlockSize {
+		report.Blocks = append(report.Blocks, unmarshalReceiverReportBlock(packet.Payload[offset:offset+ReceiverReportBlockSize]))
+	}
+	return report, nil
 }

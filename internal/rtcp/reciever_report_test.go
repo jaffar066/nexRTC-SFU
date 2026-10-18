@@ -7,11 +7,11 @@ func TestReceiverReport(t *testing.T) {
 		SSRC: 9999,
 		Blocks: []ReceiverReportBlock{
 			{
-				SSRC:              12345,
-				FractionLost:      10,
-				CumulativeLost:    5,
-				HighestSeqNumber:  100,
-				Jitter:            250,
+				SSRC:             12345,
+				FractionLost:     10,
+				CumulativeLost:   5,
+				HighestSeqNumber: 100,
+				Jitter:           250,
 				LastSenderReport: 5000,
 				DelaySinceLastSR: 100,
 			},
@@ -65,5 +65,49 @@ func TestReceiverReport(t *testing.T) {
 
 	if block.DelaySinceLastSR != expected.DelaySinceLastSR {
 		t.Fatalf("DLSR mismatch")
+	}
+}
+
+func TestReceiverReportSignedCumulativeLoss(t *testing.T) {
+	tests := []int32{-1, -8388608, 0, 8388607}
+	for _, lost := range tests {
+		report := &ReceiverReport{
+			SSRC: 1,
+			Blocks: []ReceiverReportBlock{
+				{SSRC: 2, CumulativeLost: lost},
+			},
+		}
+		data, err := report.Marshal()
+		if err != nil {
+			t.Fatalf("marshal cumulative loss %d: %v", lost, err)
+		}
+		parsed, err := UnmarshalReceiverReport(data)
+		if err != nil {
+			t.Fatalf("unmarshal cumulative loss %d: %v", lost, err)
+		}
+		if got := parsed.Blocks[0].CumulativeLost; got != lost {
+			t.Errorf("cumulative loss = %d, want %d", got, lost)
+		}
+	}
+}
+
+func TestReceiverReportRejectsCountLengthMismatch(t *testing.T) {
+	data := make([]byte, 8)
+	data[0] = 2<<6 | 1
+	data[1] = ReceiverReportType
+	data[3] = 1
+	if _, err := UnmarshalReceiverReport(data); err == nil {
+		t.Fatal("expected error for report count/length mismatch")
+	}
+}
+
+func TestReceiverReportMarshalRejectsOutOfRangeCumulativeLoss(t *testing.T) {
+	for _, lost := range []int32{-8388609, 8388608} {
+		report := &ReceiverReport{
+			Blocks: []ReceiverReportBlock{{CumulativeLost: lost}},
+		}
+		if _, err := report.Marshal(); err == nil {
+			t.Errorf("Marshal() accepted cumulative loss %d", lost)
+		}
 	}
 }

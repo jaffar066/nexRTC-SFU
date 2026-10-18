@@ -14,6 +14,18 @@ type RTPReceiveLoop struct {
 	bufferSize int
 }
 
+type rtpReadError struct {
+	err error
+}
+
+func (e *rtpReadError) Error() string {
+	return fmt.Sprintf("read RTP packet: %v", e.err)
+}
+
+func (e *rtpReadError) Unwrap() error {
+	return e.err
+}
+
 func NewRTPReceiveLoop(
 	conn *net.UDPConn,
 	streams *StreamManager,
@@ -51,7 +63,7 @@ func (r *RTPReceiveLoop) ReceiveOnce() (*Packet, error) {
 
 	n, _, err := r.conn.ReadFromUDP(buffer)
 	if err != nil {
-		return nil, fmt.Errorf("read RTP packet: %w", err)
+		return nil, &rtpReadError{err: err}
 	}
 
 	packet, err := Unmarshal(buffer[:n])
@@ -59,12 +71,14 @@ func (r *RTPReceiveLoop) ReceiveOnce() (*Packet, error) {
 		return nil, fmt.Errorf("unmarshal RTP packet: %w", err)
 	}
 
-	arrivalTime := float64(time.Now().UnixNano()) / 1e9
+	now := time.Now()
+	arrivalTime := float64(now.UnixNano()) / 1e9
 
-	r.streams.ProcessPacket(
+	r.streams.ProcessPacketAt(
 		packet,
 		arrivalTime,
 		r.clockRate,
+		now,
 	)
 
 	if r.forwarder != nil {

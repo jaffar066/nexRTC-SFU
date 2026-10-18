@@ -3,6 +3,8 @@
         let localStream = null;
         let myUserId = null;
         let currentRoom = null;
+        let tokenExpired = false;
+        let joiningRoom = false;
 
         const peers = new Map(); 
         const pendingIceCandidates = new Map();
@@ -12,6 +14,7 @@
         const statusEl = document.getElementById("status");
         const usersDisplay = document.getElementById("users");
         const videoGrid = document.getElementById("videoGrid");
+        const signalingUrlInput = document.getElementById("signalingUrlInput");
 
         // ===== UI helpers =====
         function setStatus(message) {
@@ -96,7 +99,7 @@
                 sendSignalingMessage({
                     type: "ice-candidate",
                     target: remoteUserId,
-                    data: { candidate: event.candidate }
+                    data: event.candidate.toJSON()
                 });
             };
 
@@ -179,7 +182,11 @@
 
         async function handleIceCandidate(message) {
             const remoteUserId = message.userId;
-            const candidate = message.data.candidate;
+            const candidate = getIceCandidateInit(message.data);
+            if (!candidate) {
+                console.error("Invalid ICE candidate payload:", message.data);
+                return;
+            }
             const pc = createPeerConnection(remoteUserId);
 
             // Remote SDP not set yet -> queue the candidate
@@ -198,6 +205,19 @@
             } catch (error) {
                 console.error("Failed to add ICE:", error);
             }
+        }
+
+        function getIceCandidateInit(data) {
+            if (!data || typeof data !== "object") {
+                return null;
+            }
+            if (typeof data.candidate === "string") {
+                return data;
+            }
+            if (data.candidate && typeof data.candidate === "object") {
+                return data.candidate;
+            }
+            return null;
         }
 
         async function flushPendingIce(remoteUserId) {
@@ -219,49 +239,136 @@
         }
 
         // ===== WebSocket =====
-        function connectWebSocket() {
+        function connectWebSocket(signalingUrl, token) {
             return new Promise((resolve, reject) => {
-                socket = new WebSocket("ws://localhost:8080/ws");
+                socket = new WebSocket(signalingUrl);
+                let authenticated = false;
+                tokenExpired = false;
 
                 socket.onopen = () => {
                     console.log("WebSocket connected");
-                    setStatus("Connected to signaling server");
-                    resolve();
+                    socket.send(JSON.stringify({
+                        type: "authenticate",
+                        requestId: crypto.randomUUID(),
+                        data: { token }
+                    }));
                 };
 
                 socket.onmessage = async event => {
-                    const message = JSON.parse(event.data);
+                    let message;
+                    try {
+                        message = JSON.parse(event.data);
+                    } catch (error) {
+                        console.error("Invalid signaling response:", error);
+                        socket.close();
+                        if (!authenticated) reject(error);
+                        return;
+                    }
                     console.log("Received:", message);
+                    if (!authenticated && message.type === "authenticated") {
+                        authenticated = true;
+                        const expiresAt = message.data?.expiresAt;
+                        console.info("[auth] Authentication succeeded", {
+                            participantId: message.userId,
+                            expiresAt: expiresAt || "not provided"
+                        });
+                        setStatus(`Authenticated as ${message.userId}`);
+                        resolve();
+                    } else if (!authenticated && message.type === "error") {
+                        const reason = message.data?.message || "Authentication failed";
+                        reject(new Error(reason));
+                        socket.close();
+                        return;
+                    }
                     await handleMessage(message);
                 };
 
                 socket.onerror = error => {
                     console.error("WebSocket error:", error);
-                    reject(error);
+                    if (!authenticated) reject(error);
                 };
 
-                socket.onclose = () => setStatus("Disconnected from signaling server");
+                socket.onclose = () => {
+                    setStatus(tokenExpired
+                        ? "Authentication expired. Reconnect with a fresh token."
+                        : "Disconnected from signaling server");
+                    if (!authenticated) reject(new Error("Signaling connection closed before authentication"));
+                };
             });
         }
 
-        function joinRoom() {
+        async function requestDevelopmentToken(signalingUrl, roomId) {
+            const endpoint = new URL(signalingUrl);
+            endpoint.protocol = endpoint.protocol === "wss:" ? "https:" : "http:";
+            endpoint.pathname = "/dev/token";
+            endpoint.search = "";
+            endpoint.hash = "";
+
+            const response = await fetch(endpoint, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ roomId })
+            });
+            if (!response.ok) {
+                const detail = await response.text();
+                throw new Error(`Could not get a local demo token (${response.status}): ${detail}`);
+            }
+            const issued = await response.json();
+            if (!issued.token) {
+                throw new Error("Token endpoint returned an empty token");
+            }
+            console.info("[auth] Local demo token issued", {
+                participantId: issued.participantId,
+                roomId: issued.roomId,
+                expiresAt: issued.expiresAt
+            });
+            return issued.token;
+        }
+
+        async function joinRoom() {
+            if (joiningRoom || (socket && socket.readyState === WebSocket.OPEN && currentRoom)) {
+                return;
+            }
             const roomId = roomInput.value.trim();
-            if (!roomId) {
-                alert("Enter a room ID");
+            const signalingUrl = signalingUrlInput.value.trim();
+            if (!roomId || !signalingUrl) {
+                setStatus("Enter the WebSocket URL and room ID first.");
                 return;
             }
 
-            currentRoom = roomId;
-            sendSignalingMessage({ type: "join", roomId });
-            setStatus(`Joining room: ${roomId}`);
+            joiningRoom = true;
+            joinButton.disabled = true;
+            try {
+                if (!socket || socket.readyState !== WebSocket.OPEN) {
+                    setStatus("Requesting a local demo token...");
+                    const token = await requestDevelopmentToken(signalingUrl, roomId);
+                    setStatus("Connecting and authenticating...");
+                    await connectWebSocket(signalingUrl, token);
+                }
+                sendSignalingMessage({ type: "join", roomId });
+                setStatus(`Joining room: ${roomId}`);
+            } catch (error) {
+                console.error("[auth] Could not connect or authenticate:", error);
+                setStatus(`Connection failed: ${error.message}`);
+            } finally {
+                joiningRoom = false;
+                joinButton.disabled = false;
+            }
         }
 
         // ===== Server message handler =====
         async function handleMessage(message) {
             switch (message.type) {
+                case "authenticated":
+                    break;
+
                 case "joined": {
                     myUserId = message.userId;
                     currentRoom = message.roomId;
+                    console.info("[room] Joined room", {
+                        roomId: currentRoom,
+                        participantId: myUserId
+                    });
                     setStatus(`Joined ${currentRoom} as ${myUserId}`);
 
                     const localLabel = videoGrid.querySelector(".video-label");
@@ -281,7 +388,10 @@
 
                 // Existing users only get notified; the new user creates the offer
                 case "peer-joined":
-                    console.log("New peer joined:", message.userId);
+                    console.info("[room] Peer joined after server authentication:", {
+                        roomId: message.roomId,
+                        participantId: message.userId
+                    });
                     setStatus(`${message.userId} joined the room`);
                     break;
 
@@ -303,9 +413,22 @@
                     setStatus(`${message.userId} left`);
                     break;
 
+                case "token-expired":
+                    tokenExpired = true;
+                    console.warn("[auth] Token expired; signaling connection is closing.", {
+                        participantId: message.userId,
+                        details: message.data
+                    });
+                    for (const remoteUserId of peers.keys()) {
+                        removePeer(remoteUserId);
+                    }
+                    currentRoom = null;
+                    setStatus("Authentication expired. Reconnect with a fresh token.");
+                    break;
+
                 case "error":
-                    console.error(message.data);
-                    setStatus(`Error: ${message.data}`);
+                    console.error(message.data?.code, message.data?.message);
+                    setStatus(`Error: ${message.data?.message || "Signaling request failed"}`);
                     break;
 
                 default:
@@ -319,11 +442,10 @@
         async function start() {
             try {
                 await startCamera();
-                await connectWebSocket();
-                setStatus("Ready. Enter a room and click Join Room.");
+                setStatus("Camera ready. Enter your token and room, then click Join Room.");
             } catch (error) {
                 console.error(error);
-                setStatus("Failed to start NexRTC");
+                setStatus(`Camera setup failed: ${error.message}`);
             }
         }
 

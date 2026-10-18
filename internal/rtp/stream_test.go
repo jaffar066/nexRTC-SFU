@@ -2,6 +2,7 @@ package rtp
 
 import (
 	"testing"
+	"time"
 )
 
 func TestStreamManagerGetOrCreate(t *testing.T) {
@@ -244,5 +245,29 @@ func TestStreamStatisticsNoPacketLoss(t *testing.T) {
 			"expected 0%% packet loss, got %.2f%%",
 			stream.StreamStats.LossPercentage,
 		)
+	}
+}
+
+func TestStreamManagerProcessPacketAtUsesSuppliedTime(t *testing.T) {
+	now := time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)
+	scheduler := NewNACKScheduler(NACKSchedulerConfig{
+		InitialDelay:  10 * time.Millisecond,
+		RetryInterval: time.Second,
+		MaxRetries:    1,
+	})
+	manager := NewStreamManagerWithNACKScheduler(scheduler)
+
+	manager.ProcessPacketAt(&Packet{SSRC: 7, SequenceNumber: 100}, 0, 90000, now)
+	missing := manager.ProcessPacketAt(&Packet{SSRC: 7, SequenceNumber: 102}, 0, 90000, now)
+
+	if len(missing) != 1 || missing[0] != 101 {
+		t.Fatalf("missing = %v, want [101]", missing)
+	}
+	if requests := manager.PollNACKs(now.Add(9 * time.Millisecond)); len(requests) != 0 {
+		t.Fatalf("NACKs before initial delay = %v, want none", requests)
+	}
+	requests := manager.PollNACKs(now.Add(10 * time.Millisecond))
+	if len(requests) != 1 || requests[0].SSRC != 7 || len(requests[0].Sequences) != 1 || requests[0].Sequences[0] != 101 {
+		t.Fatalf("NACKs at initial delay = %+v, want SSRC 7 sequence 101", requests)
 	}
 }

@@ -52,6 +52,12 @@
             color: #8fd3ff;
         }
 
+        #authHelp {
+            margin-top: 8px;
+            color: #aaa;
+            font-size: 13px;
+        }
+
         main {
             padding: 20px;
         }

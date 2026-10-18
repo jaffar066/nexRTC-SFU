@@ -55,6 +55,20 @@ func TestExpandNACKPair(t *testing.T) {
 	}
 }
 
+func TestExpandNACKPairAcrossSequenceWrap(t *testing.T) {
+	pair := rtcp.NACKPair{PID: 65534, BLP: 0b0000000000000111}
+	got := ExpandNACKPair(pair)
+	want := []uint16{65534, 65535, 0, 1}
+	if len(got) != len(want) {
+		t.Fatalf("expanded sequences = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("expanded sequence %d = %d, want %d", i, got[i], want[i])
+		}
+	}
+}
+
 func TestRetransmissionManager(t *testing.T) {
 	buffer := NewRetransmissionBuffer(100)
 

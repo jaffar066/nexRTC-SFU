@@ -3,6 +3,8 @@ package rtcp
 import (
 	"encoding/binary"
 	"errors"
+	"fmt"
+	"sort"
 )
 
 const (
@@ -22,23 +24,34 @@ type NACK struct {
 	Pairs []NACKPair
 }
 
-// BuildNACKPairs takes a slice of missing sequence numbers and returns a slice of NACKPair structs.
-
+// BuildNACKPairs groups missing sequence numbers into PID/BLP pairs.
+// Input is ordered relative to its first sequence number; the values should
+// span less than half the uint16 sequence space.
 func BuildNACKPairs(missing []uint16) []NACKPair {
 	if len(missing) == 0 {
 		return nil
 	}
 
-	pairs := make([]NACKPair, 0)
+	base := missing[0]
+	sequences := append([]uint16(nil), missing...)
+	sort.Slice(sequences, func(i, j int) bool {
+		return uint16(sequences[i]-base) < uint16(sequences[j]-base)
+	})
 
-	pid := missing[0]
+	pairs := make([]NACKPair, 0, len(sequences))
+	pid := sequences[0]
 	var blp uint16
+	lastSequence := pid
 
-	for i := 1; i < len(missing); i++ {
-		distance := uint16(missing[i] - pid)
+	for _, sequence := range sequences[1:] {
+		if sequence == lastSequence {
+			continue
+		}
+		distance := uint16(sequence - pid)
 
 		if distance >= 1 && distance <= 16 {
 			blp |= 1 << (distance - 1)
+			lastSequence = sequence
 			continue
 		}
 
@@ -47,8 +60,9 @@ func BuildNACKPairs(missing []uint16) []NACKPair {
 			BLP: blp,
 		})
 
-		pid = missing[i]
+		pid = sequence
 		blp = 0
+		lastSequence = sequence
 	}
 
 	pairs = append(pairs, NACKPair{
@@ -62,107 +76,65 @@ func BuildNACKPairs(missing []uint16) []NACKPair {
 // Marshal serializes the NACK packet into a byte slice.
 
 func (n *NACK) Marshal() ([]byte, error) {
+	if n == nil {
+		return nil, errors.New("NACK is nil")
+	}
 	if len(n.Pairs) == 0 {
 		return nil, errors.New("NACK must contain at least one pair")
 	}
+	const maxNACKPairs = 65533
+	if len(n.Pairs) > maxNACKPairs {
+		return nil, fmt.Errorf("NACK has too many feedback pairs: %d", len(n.Pairs))
+	}
 
-	// Header + Sender SSRC + Media SSRC + NACK pairs
-	size := 12 + len(n.Pairs)*4
-
-	data := make([]byte, size)
-
-	// Version = 2
-	data[0] = 2 << 6
-
-	// FMT = 1
-	data[0] |= NACKFormat
-
-	// PT = 205
-	data[1] = RTPFeedbackType
-
-	// RTCP length
-	length := uint16(size/4 - 1)
-
-	binary.BigEndian.PutUint16(data[2:4], length)
-
-	// Sender SSRC
-	binary.BigEndian.PutUint32(
-		data[4:8],
-		n.SenderSSRC,
-	)
-
-	// Media SSRC
-	binary.BigEndian.PutUint32(
-		data[8:12],
-		n.MediaSSRC,
-	)
-
-	offset := 12
-
+	payload := make([]byte, 8+len(n.Pairs)*4)
+	binary.BigEndian.PutUint32(payload[0:4], n.SenderSSRC)
+	binary.BigEndian.PutUint32(payload[4:8], n.MediaSSRC)
+	offset := 8
 	for _, pair := range n.Pairs {
-		binary.BigEndian.PutUint16(
-			data[offset:offset+2],
-			pair.PID,
-		)
-
-		binary.BigEndian.PutUint16(
-			data[offset+2:offset+4],
-			pair.BLP,
-		)
-
+		binary.BigEndian.PutUint16(payload[offset:offset+2], pair.PID)
+		binary.BigEndian.PutUint16(payload[offset+2:offset+4], pair.BLP)
 		offset += 4
 	}
-
-	return data, nil
+	return (&Packet{
+		Version: 2,
+		Count:   NACKFormat,
+		Type:    RTPFeedbackType,
+		Payload: payload,
+	}).Marshal()
 }
 
-// UnmarshalNACK deserializes a byte slice into a NACK packet.
-
+// UnmarshalNACK parses one standalone RTCP NACK packet.
 func UnmarshalNACK(data []byte) (*NACK, error) {
-	if len(data) < 12 {
-		return nil, errors.New("NACK packet too short")
+	packet, err := Unmarshal(data)
+	if err != nil {
+		return nil, fmt.Errorf("parse RTCP NACK packet: %w", err)
 	}
-
-	if data[0]>>6 != 2 {
-		return nil, errors.New("unsupported RTCP version")
-	}
-
-	if data[0]&0x1F != NACKFormat {
-		return nil, errors.New("not a NACK packet")
-	}
-
-	if data[1] != RTPFeedbackType {
+	if packet.Type != RTPFeedbackType {
 		return nil, errors.New("not an RTP feedback packet")
 	}
-
-	pairBytes := len(data) - 12
-
+	if packet.Count != NACKFormat {
+		return nil, errors.New("not an RTCP NACK packet")
+	}
+	if len(packet.Payload) < 12 {
+		return nil, errors.New("NACK packet must contain at least one pair")
+	}
+	pairBytes := len(packet.Payload) - 8
 	if pairBytes%4 != 0 {
 		return nil, errors.New("invalid NACK pair length")
 	}
-
 	nack := &NACK{
-		SenderSSRC: binary.BigEndian.Uint32(data[4:8]),
-		MediaSSRC:  binary.BigEndian.Uint32(data[8:12]),
+		SenderSSRC: binary.BigEndian.Uint32(packet.Payload[0:4]),
+		MediaSSRC:  binary.BigEndian.Uint32(packet.Payload[4:8]),
 		Pairs:      make([]NACKPair, 0, pairBytes/4),
 	}
 
-	offset := 12
-
-	for offset < len(data) {
+	for offset := 8; offset < len(packet.Payload); offset += 4 {
 		pair := NACKPair{
-			PID: binary.BigEndian.Uint16(
-				data[offset : offset+2],
-			),
-
-			BLP: binary.BigEndian.Uint16(
-				data[offset+2 : offset+4],
-			),
+			PID: binary.BigEndian.Uint16(packet.Payload[offset : offset+2]),
+			BLP: binary.BigEndian.Uint16(packet.Payload[offset+2 : offset+4]),
 		}
-
 		nack.Pairs = append(nack.Pairs, pair)
-
-		offset += 4
 	}
 
 	return nack, nil

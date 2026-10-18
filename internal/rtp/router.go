@@ -128,6 +128,8 @@ func (r *RTPRouter) SubscriberCount(ssrc uint32) int {
 
 func cloneRTPPacket(packet *Packet) *Packet {
 	clone := *packet
+	clone.CSRCs = append([]uint32(nil), packet.CSRCs...)
+	clone.ExtensionData = append([]byte(nil), packet.ExtensionData...)
 	clone.Payload = append([]byte(nil), packet.Payload...)
 	return &clone
 }

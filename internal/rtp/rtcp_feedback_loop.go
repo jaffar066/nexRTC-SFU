@@ -3,6 +3,7 @@ package rtp
 import (
 	"context"
 	"fmt"
+	"log"
 	"sync"
 	"time"
 )
@@ -71,9 +72,7 @@ func (l *RTCPFeedbackLoop) run(
 		case now := <-ticker.C:
 			_, err := l.controller.PollAndSend(now)
 			if err != nil {
-				// Keep the loop alive; a later tick can retry.
-				// Production code should report this error
-				// through structured logging or metrics.
+				log.Printf("RTCP feedback loop error: %v", err)
 				continue
 			}
 		}

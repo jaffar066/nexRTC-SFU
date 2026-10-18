@@ -9,7 +9,18 @@ func TestSenderReport(t *testing.T) {
 		NTPFrac:           500,
 		RTPTimestamp:      90000,
 		SenderPacketCount: 1500,
-		SenderOctetCount: 500000,
+		SenderOctetCount:  500000,
+		Blocks: []ReceiverReportBlock{
+			{
+				SSRC:             54321,
+				FractionLost:     4,
+				CumulativeLost:   -3,
+				HighestSeqNumber: 900,
+				Jitter:           7,
+				LastSenderReport: 8,
+				DelaySinceLastSR: 9,
+			},
+		},
 	}
 
 	data, err := report.Marshal()
@@ -44,5 +55,18 @@ func TestSenderReport(t *testing.T) {
 
 	if parsed.SenderOctetCount != report.SenderOctetCount {
 		t.Fatalf("octet count mismatch")
+	}
+	if len(parsed.Blocks) != 1 || parsed.Blocks[0] != report.Blocks[0] {
+		t.Fatalf("report blocks = %+v, want %+v", parsed.Blocks, report.Blocks)
+	}
+}
+
+func TestSenderReportRejectsCountLengthMismatch(t *testing.T) {
+	data := make([]byte, SenderReportSize)
+	data[0] = 2<<6 | 1
+	data[1] = SenderReportType
+	data[3] = 6
+	if _, err := UnmarshalSenderReport(data); err == nil {
+		t.Fatal("expected error for sender report count/length mismatch")
 	}
 }

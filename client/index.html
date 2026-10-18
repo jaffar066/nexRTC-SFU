@@ -11,9 +11,11 @@
     <header>
         <h1>NexRTC</h1>
         <div class="controls">
+            <input id="signalingUrlInput" type="url" placeholder="WebSocket URL" value="ws://127.0.0.1:8080/ws">
             <input id="roomInput" type="text" placeholder="Room ID" value="room-123">
             <button id="joinButton">Join Room</button>
         </div>
+        <div id="authHelp">Local demo: the server creates a short-lived token when you join.</div>
         <div id="status">Not connected</div>
         <div id="users">Users: 0</div>
     </header>
